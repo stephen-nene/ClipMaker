@@ -1,0 +1,109 @@
+name: Build ClipMaker App
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: clipmaker-linux
+            add_data_sep: ":"
+          - os: macos-latest
+            artifact_name: clipmaker-macos
+            add_data_sep: ":"
+          - os: windows-latest
+            artifact_name: clipmaker-windows
+            add_data_sep: ";"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            python -m pip install -r requirements.txt
+          else
+            python -m pip install streamlit pandas moviepy
+          fi
+          python -m pip install pyinstaller
+
+      - name: Create PyInstaller launcher
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          launcher = textwrap.dedent(
+              """
+              import os
+              import sys
+
+
+              def app_script_path() -> str:
+                  if getattr(sys, "frozen", False):
+                      base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+                  else:
+                      base = os.path.dirname(os.path.abspath(__file__))
+                  return os.path.join(base, "app_streamlit.py")
+
+
+              def main() -> int:
+                  script = app_script_path()
+                  if not os.path.exists(script):
+                      raise FileNotFoundError(f"Could not find Streamlit app at: {script}")
+
+                  import streamlit.web.cli as stcli
+
+                  sys.argv = [
+                      "streamlit",
+                      "run",
+                      script,
+                      "--browser.gatherUsageStats",
+                      "false",
+                  ]
+                  return stcli.main()
+
+
+              if __name__ == "__main__":
+                  raise SystemExit(main())
+              """
+          ).lstrip()
+
+          Path("build_launcher.py").write_text(launcher, encoding="utf-8")
+          PY
+
+      - name: Build binary with PyInstaller
+        shell: bash
+        run: |
+          pyinstaller \
+            --noconfirm \
+            --clean \
+            --onefile \
+            --name ClipMaker \
+            --add-data "app_streamlit.py${{ matrix.add_data_sep }}." \
+            build_launcher.py
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/
+          if-no-files-found: error
